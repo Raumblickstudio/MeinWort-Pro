@@ -15,14 +15,49 @@ export class AudioService {
   private stream: MediaStream | null = null;
   private chunks: Blob[] = [];
   private startTime: number = 0;
+  // ⚡ SPEED OPTIMIZATION: Pre-warmed stream für sofortigen Start
+  private preWarmedStream: MediaStream | null = null;
+  private isPreWarming: boolean = false;
 
   constructor(private options: AudioRecordingOptions = {}) {
     this.options = {
-      sampleRate: 16000, // Whisper arbeitet optimal mit 16kHz
+      sampleRate: 24000, // 🎧 QUALITÄT: 24kHz für bessere Sprachqualität (upgraded von 16kHz)
       channelCount: 1,   // Mono für bessere Whisper-Performance
       bitDepth: 16,
       ...options
     };
+    
+    // ⚡ SPEED OPTIMIZATION: Stream pre-warming im Hintergrund starten
+    this.preWarmStream();
+  }
+
+  // ⚡ SPEED OPTIMIZATION: Stream im Hintergrund vorbereiten
+  private async preWarmStream(): Promise<void> {
+    if (this.isPreWarming || this.preWarmedStream) return;
+    
+    try {
+      this.isPreWarming = true;
+      console.log('🔥 Pre-warming audio stream für schnelleren Start...');
+      
+      this.preWarmedStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: this.options.sampleRate,
+          channelCount: this.options.channelCount,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          ...(navigator.mediaDevices.getSupportedConstraints().latency && { latency: 0.01 }),
+          ...(navigator.mediaDevices.getSupportedConstraints().volume && { volume: 1.0 }),
+        },
+        video: false,
+      });
+      
+      console.log('✅ Audio stream pre-warmed und bereit für sofortige Nutzung');
+    } catch (error) {
+      console.log('ℹ️ Pre-warming fehlgeschlagen (nicht kritisch):', error);
+    } finally {
+      this.isPreWarming = false;
+    }
   }
 
   async requestPermission(): Promise<boolean> {
@@ -45,20 +80,31 @@ export class AudioService {
     }
 
     try {
-      // Mikrofon-Stream anfordern
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: this.options.sampleRate,
-          channelCount: this.options.channelCount,
-          echoCancellation: false, // 🔊 MAX EMPFINDLICHKEIT: Alle Filter deaktiviert
-          noiseSuppression: false, // 🔊 MAX EMPFINDLICHKEIT: Kein Noise-Filter
-          autoGainControl: false,  // 🔊 MAX EMPFINDLICHKEIT: Kein Auto-Gain um leise Signale zu bewahren
-          // 🔊 ERWEITERTE EMPFINDLICHKEIT: Browser-spezifische Constraints
-          ...(navigator.mediaDevices.getSupportedConstraints().latency && { latency: 0.01 }),
-          ...(navigator.mediaDevices.getSupportedConstraints().volume && { volume: 1.0 }),
-        },
-        video: false,
-      });
+      // ⚡ SPEED OPTIMIZATION: Pre-warmed stream verwenden wenn verfügbar
+      if (this.preWarmedStream && this.preWarmedStream.active) {
+        console.log('🚀 Verwende pre-warmed stream für sofortigen Start');
+        this.stream = this.preWarmedStream;
+        this.preWarmedStream = null; // Stream ist jetzt in Verwendung
+        
+        // Neuen Stream für nächstes Mal pre-warmen
+        setTimeout(() => this.preWarmStream(), 100);
+      } else {
+        console.log('🔄 Erstelle neuen audio stream (pre-warmed nicht verfügbar)');
+        // Mikrofon-Stream anfordern
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: this.options.sampleRate,
+            channelCount: this.options.channelCount,
+            echoCancellation: false, // 🔊 MAX EMPFINDLICHKEIT: Alle Filter deaktiviert
+            noiseSuppression: false, // 🔊 MAX EMPFINDLICHKEIT: Kein Noise-Filter
+            autoGainControl: false,  // 🔊 MAX EMPFINDLICHKEIT: Kein Auto-Gain um leise Signale zu bewahren
+            // 🔊 ERWEITERTE EMPFINDLICHKEIT: Browser-spezifische Constraints
+            ...(navigator.mediaDevices.getSupportedConstraints().latency && { latency: 0.01 }),
+            ...(navigator.mediaDevices.getSupportedConstraints().volume && { volume: 1.0 }),
+          },
+          video: false,
+        });
+      }
 
       // MediaRecorder konfigurieren
       const options: MediaRecorderOptions = {};
@@ -100,6 +146,29 @@ export class AudioService {
         }
       }
 
+      // 🎧 AUDIO-NORMALISIERUNG: Web Audio API für bessere Audio-Qualität
+      const audioContext = new AudioContext({ sampleRate: this.options.sampleRate });
+      const source = audioContext.createMediaStreamSource(this.stream);
+      
+      // Gain-Normalisierung für konsistente Lautstärke
+      const gainNode = audioContext.createGain();
+      gainNode.gain.setValueAtTime(2.0, audioContext.currentTime); // 2x Verstärkung für leise Sprache
+      
+      // Compressor für gleichmäßige Lautstärke
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
+      compressor.knee.setValueAtTime(30, audioContext.currentTime);
+      compressor.ratio.setValueAtTime(12, audioContext.currentTime);
+      compressor.attack.setValueAtTime(0.003, audioContext.currentTime);
+      compressor.release.setValueAtTime(0.25, audioContext.currentTime);
+      
+      // Audio-Pipeline: Source → Gain → Compressor (KEIN Destination = kein Feedback)
+      source.connect(gainNode);
+      gainNode.connect(compressor);
+      // ❌ FEEDBACK FIX: NICHT an destination connecten um Echo zu vermeiden
+      
+      console.log('🎧 Audio-Normalisierung aktiviert: 2x Gain + Dynamic Compression');
+
       this.mediaRecorder = new MediaRecorder(this.stream, options);
       this.chunks = [];
       this.startTime = Date.now();
@@ -124,8 +193,8 @@ export class AudioService {
         throw new Error('Fehler bei der Audioaufnahme');
       };
 
-      // Aufnahme starten
-      this.mediaRecorder.start(100); // Alle 100ms Daten sammeln
+      // ⚡ SPEED OPTIMIZATION: Häufigere Datensammlung für schnellere Übertragung
+      this.mediaRecorder.start(50); // Alle 50ms Daten sammeln - 2x schneller
 
     } catch (error) {
       await this.cleanup();
@@ -202,6 +271,14 @@ export class AudioService {
           track.stop();
         });
         this.stream = null;
+      }
+
+      // Pre-warmed stream auch bereinigen falls vorhanden
+      if (this.preWarmedStream) {
+        this.preWarmedStream.getTracks().forEach(track => {
+          track.stop();
+        });
+        this.preWarmedStream = null;
       }
 
       this.mediaRecorder = null;

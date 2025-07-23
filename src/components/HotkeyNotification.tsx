@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo, useMemo } from "react";
 
 interface HotkeyNotificationProps {
   show: boolean;
@@ -7,7 +7,8 @@ interface HotkeyNotificationProps {
   type: "success" | "info" | "warning";
 }
 
-export function HotkeyNotification({ show, message, type }: HotkeyNotificationProps) {
+// ⚡ PERFORMANCE: Komponente memoized für bessere UI-Performance
+export const HotkeyNotification = memo(function HotkeyNotification({ show, message, type }: HotkeyNotificationProps) {
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
@@ -21,7 +22,8 @@ export function HotkeyNotification({ show, message, type }: HotkeyNotificationPr
     }
   }, [show]);
 
-  const getColors = () => {
+  // ⚡ PERFORMANCE: Memoized colors für bessere Render-Performance
+  const colors = useMemo(() => {
     switch (type) {
       case "success":
         return "bg-green-900/90 border-green-500/50 text-green-200";
@@ -30,7 +32,7 @@ export function HotkeyNotification({ show, message, type }: HotkeyNotificationPr
       default:
         return "bg-blue-900/90 border-blue-500/50 text-blue-200";
     }
-  };
+  }, [type]);
 
   return (
     <AnimatePresence>
@@ -42,7 +44,7 @@ export function HotkeyNotification({ show, message, type }: HotkeyNotificationPr
           transition={{ duration: 0.3, ease: "easeOut" }}
           className={`
             absolute top-2 left-1/2 transform -translate-x-1/2 z-50
-            px-3 py-2 rounded-md border ${getColors()}
+            px-3 py-2 rounded-md border ${colors}
             text-xs font-medium text-center
             backdrop-blur-sm shadow-lg
           `}
@@ -52,4 +54,4 @@ export function HotkeyNotification({ show, message, type }: HotkeyNotificationPr
       )}
     </AnimatePresence>
   );
-}
+});

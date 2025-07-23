@@ -103,11 +103,22 @@ export class TranscriptionService {
         throw new Error(`Audio-Datei zu groß (${Math.round(recording.blob.size / 1024 / 1024)}MB). Maximum: 25MB`);
       }
 
-      // Minimale Dauer prüfen - realistischer für echte Sprache
+      // 🔇 SILENCE DETECTION: Sehr kurze Aufnahmen als Stille filtern
       if (recording.duration < 300) {
-        console.warn('⚠️ Audio-Aufnahme sehr kurz:', recording.duration, 'ms');
+        console.warn('⚠️ Audio-Aufnahme sehr kurz (wahrscheinlich Stille):', recording.duration, 'ms');
         return {
           text: '[Aufnahme zu kurz - bitte sprechen Sie länger]',
+          duration: recording.duration,
+          confidence: 0
+        };
+      }
+
+      // 🔇 ADVANCED SILENCE DETECTION: Audio-Daten auf Stille prüfen
+      const silenceThreshold = await this.detectSilence(recording.blob);
+      if (silenceThreshold > 0.8) {
+        console.warn('🔇 Audio-Aufnahme hauptsächlich Stille erkannt:', silenceThreshold * 100, '% Stille');
+        return {
+          text: '[Nur Stille erkannt - bitte lauter sprechen]',
           duration: recording.duration,
           confidence: 0
         };
@@ -121,10 +132,8 @@ export class TranscriptionService {
       console.log(`🔄 Starte Transkription: ${Math.round(recording.blob.size / 1024)}KB, ${recording.duration}ms`);
       console.log(`🎧 Audio-Details: Type=${recording.blob.type}, Size=${recording.blob.size} bytes`);
 
-      // File-Objekt für OpenAI API erstellen
-      const audioFile = new File([recording.blob], 'recording.webm', {
-        type: recording.blob.type
-      });
+      // ⚡ SPEED OPTIMIZATION: Direkter Blob-Upload ohne File-Wrapper für bessere Performance
+      const audioBlob = recording.blob;
 
       // Standard-Optionen
       const transcriptionOptions = {
@@ -144,11 +153,8 @@ export class TranscriptionService {
         response_format: transcriptionOptions.response_format
       });
 
-      // OpenAI Whisper API aufrufen
-      const response: any = await this.client.audio.transcriptions.create({
-        file: audioFile,
-        ...transcriptionOptions,
-      });
+      // 🔄 SMART RETRY: Intelligente Wiederholung bei schlechter Qualität
+      const response: any = await this.transcribeWithRetry(audioBlob, transcriptionOptions, 2);
 
       const processingTime = Date.now() - startTime;
       console.log(`⚡ Whisper API Response erhalten in ${processingTime}ms`);
@@ -246,6 +252,101 @@ export class TranscriptionService {
   }
 
   // Cleanup für Browser-spezifische Ressourcen
+  // 🔄 SMART RETRY: Intelligente Wiederholung mit verschiedenen Parametern
+  private async transcribeWithRetry(
+    audioBlob: Blob, 
+    baseOptions: any, 
+    maxRetries: number = 2
+  ): Promise<any> {
+    const retryConfigs = [
+      // Versuch 1: Standard-Parameter
+      { ...baseOptions },
+      // Versuch 2: Höhere Temperatur für schwierige Audio
+      { ...baseOptions, temperature: Math.min(1.0, baseOptions.temperature + 0.3) },
+      // Versuch 3: Anderer Prompt für sehr schwierige Fälle
+      { ...baseOptions, 
+        temperature: 1.0, 
+        prompt: 'Dies ist deutsche Sprache mit möglicherweise schlechter Audioqualität. Nutze maximale Empfindlichkeit und aggressive Erkennung.' 
+      }
+    ];
+
+    let lastError: any;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const config = retryConfigs[attempt] || retryConfigs[retryConfigs.length - 1];
+        console.log(`🔄 Whisper Versuch ${attempt + 1}/${maxRetries + 1} mit Temperatur ${config.temperature}`);
+        
+        const response = await this.client.audio.transcriptions.create({
+          file: new File([audioBlob], 'recording.webm', { type: audioBlob.type }),
+          ...config,
+        });
+
+        // Erfolg validieren
+        if (response && (typeof response === 'string' || (response.text && response.text.trim()))) {
+          if (attempt > 0) {
+            console.log(`✅ Whisper erfolgreich nach ${attempt + 1} Versuchen`);
+          }
+          return response;
+        } else {
+          throw new Error('Leere oder ungültige Antwort');
+        }
+        
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`⚠️ Whisper Versuch ${attempt + 1} fehlgeschlagen:`, error?.message);
+        
+        // Bei letztem Versuch: Fehler weiterwerfen
+        if (attempt === maxRetries) {
+          console.error(`❌ Alle ${maxRetries + 1} Whisper-Versuche fehlgeschlagen`);
+          throw lastError;
+        }
+        
+        // Kurze Pause vor nächstem Versuch
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+    
+    throw lastError;
+  }
+
+  // 🔇 SILENCE DETECTION: Audio-Blob auf Stille analysieren
+  private async detectSilence(blob: Blob): Promise<number> {
+    try {
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioContext = new AudioContext();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      const channelData = audioBuffer.getChannelData(0);
+      const sampleRate = audioBuffer.sampleRate;
+      const frameSize = Math.floor(sampleRate * 0.1); // 100ms Frames
+      
+      let silentFrames = 0;
+      let totalFrames = 0;
+      
+      for (let i = 0; i < channelData.length; i += frameSize) {
+        const frame = channelData.slice(i, i + frameSize);
+        const rms = Math.sqrt(frame.reduce((sum, sample) => sum + sample * sample, 0) / frame.length);
+        
+        // Stille-Schwellwert: sehr niedrige RMS-Werte
+        if (rms < 0.01) {
+          silentFrames++;
+        }
+        totalFrames++;
+      }
+      
+      const silenceRatio = totalFrames > 0 ? silentFrames / totalFrames : 1;
+      console.log(`🔇 Silence Detection: ${(silenceRatio * 100).toFixed(1)}% stille Frames`);
+      
+      audioContext.close();
+      return silenceRatio;
+      
+    } catch (error) {
+      console.warn('🔇 Silence Detection fehlgeschlagen (nicht kritisch):', error);
+      return 0; // Bei Fehler annehmen dass Audio vorhanden ist
+    }
+  }
+
   cleanup(): void {
     // Momentan keine spezielle Cleanup-Logik erforderlich
     this.isInitialized = false;

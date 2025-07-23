@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ReaderIcon, StopIcon, CopyIcon } from "@radix-ui/react-icons";
 import { AppState } from "../types";
@@ -11,7 +11,8 @@ interface OverlayWindowProps {
   onCopyText?: () => Promise<boolean>;
 }
 
-export function OverlayWindow({ state, onToggleRecording, onClearText, onCopyText }: OverlayWindowProps) {
+// ⚡ PERFORMANCE: Komponente memoized für bessere UI-Performance
+export const OverlayWindow = memo(function OverlayWindow({ state, onToggleRecording, onClearText, onCopyText }: OverlayWindowProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
   const [notificationMessage, setNotificationMessage] = useState("");
@@ -70,8 +71,8 @@ export function OverlayWindow({ state, onToggleRecording, onClearText, onCopyTex
     }
   }, [state.isRecording, state.lastTranscription, state.isTranscribing, state.mode]);
 
-  // Style basierend auf Modus
-  const getModeStyles = () => {
+  // ⚡ PERFORMANCE: Memoized styles für bessere Render-Performance
+  const modeStyles = useMemo(() => {
     if (state.mode === 'text-processing') {
       return {
         border: 'border-orange-500/70',
@@ -84,9 +85,7 @@ export function OverlayWindow({ state, onToggleRecording, onClearText, onCopyTex
       background: 'bg-gray-900/95',
       glow: ''
     };
-  };
-
-  const modeStyles = getModeStyles();
+  }, [state.mode]);
 
   return (
     <motion.div
@@ -295,4 +294,4 @@ export function OverlayWindow({ state, onToggleRecording, onClearText, onCopyTex
       </AnimatePresence>
     </motion.div>
   );
-}
+});
