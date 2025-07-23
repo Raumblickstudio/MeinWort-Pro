@@ -307,7 +307,9 @@ export function useAppState() {
         // TEXT-PROCESSING MODUS: Sprachbefehl verarbeiten
         console.log(`🤖 TEXT-PROCESSING MODUS: Verarbeite "${result.text}" auf Text mit ${state.clipboardText!.length} Zeichen`);
         
+        // ⚡ OPTIMISTIC UI: Sofort Processing-State + Vorschau anzeigen
         setState(prev => ({ ...prev, isProcessingText: true }));
+        setTranscription(`Befehl: "${result.text}"\n\n⚡ Verarbeite Text...`);
         
         try {
           const normalizedCommand = ChatService.normalizeCommand(result.text);
